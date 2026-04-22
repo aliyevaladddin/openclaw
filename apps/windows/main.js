@@ -3,238 +3,603 @@ import { listen } from '@tauri-apps/api/event';
 import { getVersion } from '@tauri-apps/api/app';
 import { checkUpdate, installUpdate } from '@tauri-apps/api/updater';
 
-// Listen for gateway logs
-listen('gateway-log', (event) => {
-  appendLog(event.payload, "info");
-});
+// ── State ──
+let currentTab = 'dashboard';
+let gatewayOnline = false;
+let appVersion = '1.0.0';
 
+// ── Init ──
 (async () => {
-  const version = await getVersion();
-  document.getElementById('app-version').textContent = `v${version}`;
+  appVersion = await getVersion();
+  render();
+  setupListeners();
+  startMetricsLoop();
 })();
 
+listen('gateway-log', (event) => {
+  appendLog(event.payload, 'info');
+});
+
+// ── Render ──
+function render() {
+  document.querySelector('#app').innerHTML = `
+    <!-- Sidebar -->
+    <div class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-icon">OC</div>
+        <div>
+          <div class="brand-text">Open<span>Claw</span></div>
+        </div>
+        <span class="brand-version">v${appVersion}</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="sidebar-section">Overview</div>
+        ${navItem('dashboard', '⬡', 'Dashboard')}
+
+        <div class="sidebar-section">Configuration</div>
+        ${navItem('general', '⚙', 'General')}
+        ${navItem('channels', '🔗', 'Channels')}
+        ${navItem('sessions', '💬', 'Sessions')}
+        ${navItem('skills', '✦', 'Skills')}
+
+        <div class="sidebar-section">System</div>
+        ${navItem('debug', '🔧', 'Debug')}
+        ${navItem('about', 'ℹ', 'About')}
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-status">
+          <div class="status-dot ${gatewayOnline ? 'online' : 'offline'}" id="sidebar-dot"></div>
+          <span id="sidebar-status-text">${gatewayOnline ? 'Gateway Online' : 'Gateway Offline'}</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Area -->
+    <div class="main-area">
+      <div class="main-header">
+        <h2 id="page-title">Dashboard</h2>
+        <div class="header-actions" id="header-actions"></div>
+      </div>
+      <div class="main-content" id="main-content">
+        ${renderTab(currentTab)}
+      </div>
+    </div>
+  `;
+}
+
+function navItem(id, icon, label) {
+  return `<div class="nav-item ${currentTab === id ? 'active' : ''}" data-tab="${id}">
+    <span class="nav-icon">${icon}</span>
+    <span>${label}</span>
+  </div>`;
+}
+
+// ── Tab Content Renderers ──
+function renderTab(tab) {
+  switch (tab) {
+    case 'dashboard': return renderDashboard();
+    case 'general': return renderGeneral();
+    case 'channels': return renderChannels();
+    case 'sessions': return renderSessions();
+    case 'skills': return renderSkills();
+    case 'debug': return renderDebug();
+    case 'about': return renderAbout();
+    default: return renderDashboard();
+  }
+}
+
+function renderDashboard() {
+  return `
+    <div class="dashboard-grid">
+      <div class="stat-card">
+        <div class="stat-label">Status</div>
+        <div class="stat-value ${gatewayOnline ? 'online' : 'offline'}" id="dash-status">
+          ${gatewayOnline ? 'ONLINE' : 'OFFLINE'}
+        </div>
+        <div class="stat-sub" id="dash-uptime">Uptime: 0:00:00</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Restarts</div>
+        <div class="stat-value" id="dash-restarts">0</div>
+        <div class="stat-sub">Since last manual start</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Performance</span>
+      </div>
+      <div class="progress-row">
+        <span class="progress-label">CPU</span>
+        <div class="progress-track"><div class="progress-fill" id="cpu-bar" style="width:0%"></div></div>
+        <span class="progress-val" id="cpu-val">0%</span>
+      </div>
+      <div class="progress-row">
+        <span class="progress-label">Memory</span>
+        <div class="progress-track"><div class="progress-fill" id="ram-bar" style="width:0%"></div></div>
+        <span class="progress-val" id="ram-val">0 MB</span>
+      </div>
+      <div class="gateway-controls" id="gateway-controls">
+        <button class="btn btn-primary ${gatewayOnline ? 'hidden' : ''}" id="start-btn">Start Gateway</button>
+        <button class="btn btn-danger ${!gatewayOnline ? 'hidden' : ''}" id="stop-btn">Stop Gateway</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">System Logs</span>
+        <button class="btn btn-ghost btn-sm" id="clear-logs-btn">Clear</button>
+      </div>
+      <div class="terminal" id="logs-container">
+        <div class="log-line"><span class="log-time">[${ts()}]</span> System initializing...</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderGeneral() {
+  return `
+    <div class="settings-section">
+      <div class="settings-section-title">Gateway</div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <div class="setting-label">Gateway Port</div>
+          <div class="setting-desc">Port the OpenClaw gateway listens on. Default: 18789.</div>
+        </div>
+        <div class="setting-control">
+          <input type="number" class="input input-sm" id="setting-port" value="18789">
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <div class="setting-label">Auto-start on Boot</div>
+          <div class="setting-desc">Automatically start OpenClaw when you sign in to Windows.</div>
+        </div>
+        <div class="setting-control">
+          <label class="toggle">
+            <input type="checkbox" id="setting-autostart">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Application</div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <div class="setting-label">Start Minimized</div>
+          <div class="setting-desc">Launch the app minimized to the system tray.</div>
+        </div>
+        <div class="setting-control">
+          <label class="toggle">
+            <input type="checkbox" id="setting-minimized">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <div class="setting-label">Notifications</div>
+          <div class="setting-desc">Show system notifications for gateway events.</div>
+        </div>
+        <div class="setting-control">
+          <label class="toggle">
+            <input type="checkbox" id="setting-notifications" checked>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Updates</div>
+      <div class="setting-row">
+        <div class="setting-info">
+          <div class="setting-label">Check for Updates</div>
+          <div class="setting-desc">Verify if a newer version of OpenClaw is available.</div>
+        </div>
+        <div class="setting-control">
+          <button class="btn btn-ghost btn-sm" id="check-update-btn">Check Now</button>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top: 16px;">
+      <button class="btn btn-ghost btn-sm" id="save-settings-btn">Save Changes</button>
+    </div>
+  `;
+}
+
+function renderChannels() {
+  return `
+    <div class="two-pane">
+      <div class="pane-sidebar">
+        <div class="pane-section-label">Configured</div>
+        <div class="pane-item active">
+          <div class="pane-item-dot" style="background:var(--success)"></div>
+          <div class="pane-item-info">
+            <div class="pane-item-name">Discord</div>
+            <div class="pane-item-sub">Connected</div>
+          </div>
+        </div>
+        <div class="pane-item">
+          <div class="pane-item-dot" style="background:var(--success)"></div>
+          <div class="pane-item-info">
+            <div class="pane-item-name">Telegram</div>
+            <div class="pane-item-sub">Connected</div>
+          </div>
+        </div>
+        <div class="pane-section-label">Available</div>
+        <div class="pane-item">
+          <div class="pane-item-dot" style="background:var(--text-muted)"></div>
+          <div class="pane-item-info">
+            <div class="pane-item-name">Slack</div>
+            <div class="pane-item-sub">Not configured</div>
+          </div>
+        </div>
+        <div class="pane-item">
+          <div class="pane-item-dot" style="background:var(--text-muted)"></div>
+          <div class="pane-item-info">
+            <div class="pane-item-name">WhatsApp</div>
+            <div class="pane-item-sub">Not configured</div>
+          </div>
+        </div>
+        <div class="pane-item">
+          <div class="pane-item-dot" style="background:var(--text-muted)"></div>
+          <div class="pane-item-info">
+            <div class="pane-item-name">Signal</div>
+            <div class="pane-item-sub">Not configured</div>
+          </div>
+        </div>
+      </div>
+      <div class="pane-content">
+        <div class="empty-state">
+          <div class="empty-state-icon">🔗</div>
+          <div class="empty-state-text">Select a channel to view settings</div>
+          <div class="empty-state-sub">Channels connect OpenClaw to your messaging platforms.</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSessions() {
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Active Sessions</span>
+        <button class="btn btn-ghost btn-sm" id="refresh-sessions-btn">Refresh</button>
+      </div>
+      <div id="sessions-list">
+        <div class="empty-state">
+          <div class="empty-state-icon">💬</div>
+          <div class="empty-state-text">No active sessions</div>
+          <div class="empty-state-sub">Sessions appear after conversations begin through any channel.</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSkills() {
+  return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Installed Skills</span>
+        <button class="btn btn-ghost btn-sm" id="refresh-skills-btn">Refresh</button>
+      </div>
+      <div id="skills-list">
+        <div class="empty-state">
+          <div class="empty-state-icon">✦</div>
+          <div class="empty-state-text">No skills loaded</div>
+          <div class="empty-state-sub">Skills are loaded when the gateway connects and requirements are met.</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderDebug() {
+  return `
+    <div class="settings-section">
+      <div class="settings-section-title">Gateway Process</div>
+      <div class="debug-grid">
+        <span class="debug-label">Status</span>
+        <span class="debug-value" id="debug-status">${gatewayOnline ? 'Running' : 'Stopped'}</span>
+        <span class="debug-label">Port</span>
+        <span class="debug-value" id="debug-port">—</span>
+        <span class="debug-label">Binary</span>
+        <span class="debug-value" id="debug-binary">—</span>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Actions</div>
+      <div class="flex gap-8">
+        <button class="btn btn-ghost btn-sm" id="debug-restart-btn">Restart Gateway</button>
+        <button class="btn btn-ghost btn-sm" id="debug-health-btn">Health Check</button>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">Log Output</div>
+      <div class="terminal" id="debug-logs" style="max-height:400px;">
+        <div class="log-line"><span class="log-time">[${ts()}]</span> Debug console ready.</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderAbout() {
+  return `
+    <div class="about-center">
+      <div class="about-icon">OC</div>
+      <div class="about-title">OpenClaw</div>
+      <div class="about-version">Version ${appVersion} — Windows</div>
+      <div class="about-desc">
+        Your AI gateway for Windows. Manages the OpenClaw gateway process
+        with automatic monitoring, health checks, and system tray integration.
+      </div>
+      <div class="about-links">
+        <a href="#">GitHub</a>
+        <a href="#">Website</a>
+        <a href="#">Documentation</a>
+      </div>
+      <div class="about-divider"></div>
+      <div class="settings-section" style="width:100%;max-width:360px;">
+        <div class="setting-row">
+          <div class="setting-info">
+            <div class="setting-label">Check for Updates</div>
+          </div>
+          <div class="setting-control">
+            <button class="btn btn-ghost btn-sm" id="about-update-btn">Check Now</button>
+          </div>
+        </div>
+      </div>
+      <div class="text-xs text-muted" style="margin-top:24px;">MIT License</div>
+    </div>
+  `;
+}
+
+// ── Navigation ──
+function setupListeners() {
+  document.addEventListener('click', (e) => {
+    const navItem = e.target.closest('.nav-item');
+    if (navItem) {
+      switchTab(navItem.dataset.tab);
+      return;
+    }
+
+    // Dashboard buttons
+    if (e.target.id === 'start-btn') { handleStart(); }
+    if (e.target.id === 'stop-btn') { handleStop(); }
+    if (e.target.id === 'clear-logs-btn') { clearLogs(); }
+
+    // General settings
+    if (e.target.id === 'save-settings-btn') { saveSettings(); }
+    if (e.target.id === 'check-update-btn' || e.target.id === 'about-update-btn') { handleUpdate(); }
+
+    // Debug
+    if (e.target.id === 'debug-restart-btn') { handleDebugRestart(); }
+    if (e.target.id === 'debug-health-btn') { handleHealthCheck(); }
+  });
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  // Update nav
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.tab === tab);
+  });
+  // Update title
+  const titles = {
+    dashboard: 'Dashboard', general: 'General', channels: 'Channels',
+    sessions: 'Sessions', skills: 'Skills', debug: 'Debug', about: 'About'
+  };
+  document.getElementById('page-title').textContent = titles[tab] || tab;
+  // Render content
+  document.getElementById('main-content').innerHTML = renderTab(tab);
+  // Load tab data
+  if (tab === 'general') { loadGeneralSettings(); }
+  if (tab === 'debug') { loadDebugInfo(); }
+}
+
+// ── Gateway Control ──
+async function handleStart() {
+  try {
+    await invoke('start_gateway');
+    appendLog('Initiating gateway startup...', 'info');
+  } catch (e) {
+    appendLog('Start Error: ' + e, 'error');
+  }
+}
+
+async function handleStop() {
+  try {
+    await invoke('stop_gateway');
+    appendLog('Gateway stopped manually.', 'info');
+  } catch (e) {
+    appendLog('Stop Error: ' + e, 'error');
+  }
+}
+
+async function handleDebugRestart() {
+  try {
+    await invoke('stop_gateway');
+  } catch { /* may already be stopped */ }
+  try {
+    await invoke('start_gateway');
+    appendLog('Gateway restarted from debug panel.', 'info');
+  } catch (e) {
+    appendLog('Restart Error: ' + e, 'error');
+  }
+}
+
+async function handleHealthCheck() {
+  try {
+    const port = await invoke('get_port');
+    appendLog(`Health check: gateway on port ${port}`, 'info');
+    const debugLogs = document.getElementById('debug-logs');
+    if (debugLogs) {
+      const d = document.createElement('div');
+      d.className = 'log-line';
+      d.innerHTML = `<span class="log-time">[${ts()}]</span> Health probe sent to :${port}/health`;
+      debugLogs.appendChild(d);
+      debugLogs.scrollTop = debugLogs.scrollHeight;
+    }
+  } catch (e) {
+    appendLog('Health check error: ' + e, 'error');
+  }
+}
+
+// ── Settings ──
+async function loadGeneralSettings() {
+  try {
+    const port = await invoke('get_config', { key: 'gateway.port' });
+    const autostart = await invoke('is_autostart_enabled');
+    const portInput = document.getElementById('setting-port');
+    const autoInput = document.getElementById('setting-autostart');
+    if (portInput) { portInput.value = port || '18789'; }
+    if (autoInput) { autoInput.checked = autostart; }
+  } catch { /* defaults are fine */ }
+}
+
+async function saveSettings() {
+  try {
+    const port = document.getElementById('setting-port')?.value;
+    const autostart = document.getElementById('setting-autostart')?.checked;
+    if (port) { await invoke('set_config', { key: 'gateway.port', value: port }); }
+    if (autostart !== undefined) { await invoke('toggle_autostart', { enabled: autostart }); }
+    appendLog('Settings saved.', 'info');
+  } catch (e) {
+    appendLog('Settings Error: ' + e, 'error');
+  }
+}
+
+async function loadDebugInfo() {
+  try {
+    const port = await invoke('get_port');
+    const el = document.getElementById('debug-port');
+    if (el) { el.textContent = port; }
+  } catch { /* port unavailable */ }
+}
+
+// ── Updates ──
 async function handleUpdate() {
   try {
     const { shouldUpdate, manifest } = await checkUpdate();
     if (shouldUpdate) {
-      appendLog(`Update found: ${manifest.version}. Installing...`);
+      appendLog(`Update found: ${manifest.version}. Installing...`, 'info');
       await installUpdate();
     } else {
-      appendLog("Already on the latest version.");
+      appendLog('Already on the latest version.', 'info');
     }
   } catch (error) {
     if (error.toString().includes('Updater not active')) {
-      appendLog("Update checks are currenty disabled for this build (signing key required).", "info");
+      appendLog('Update checks disabled for this build (signing key required).', 'info');
     } else {
-      appendLog("Update Error: " + error, "error");
+      appendLog('Update Error: ' + error, 'error');
     }
   }
 }
 
-document.querySelector('#app').innerHTML = `
-  <div class="cyber-container">
-    <div class="header">
-      <div>
-        <h1>OpenClaw<span class="neon-text">_Gateway</span></h1>
-        <span id="app-version" style="font-size: 0.7rem; color: #555; margin-left: 2px;">v1.0.0</span>
-      </div>
-      <button id="settings-btn" class="settings-btn">Settings</button>
-    </div>
-    <div class="dashboard">
-      <div class="left-col">
-          <div class="card status-card">
-            <h2>Status</h2>
-            <div id="status-indicator" class="indicator checking">Checking...</div>
-            <button id="start-btn" class="cyber-btn hidden">Start Gateway</button>
-            <button id="stop-btn" class="cyber-btn hidden">Stop Gateway</button>
-          </div>
-          
-          <div class="card metrics-card">
-            <h2>Performance</h2>
-            <div class="metric-item">
-              <span>CPU Usage</span>
-              <div class="progress-bg"><div id="cpu-bar" class="progress-fill" style="width: 0%"></div></div>
-              <span id="cpu-val" class="metric-val">0%</span>
-            </div>
-            <div class="metric-item">
-              <span>Memory</span>
-              <div class="progress-bg"><div id="ram-bar" class="progress-fill" style="width: 0%"></div></div>
-              <span id="ram-val" class="metric-val">0 MB</span>
-            </div>
-            <div class="metric-footer">
-              <div class="sub-metric">
-                <label>Uptime</label>
-                <span id="uptime-val">0:00:00</span>
-              </div>
-              <div class="sub-metric">
-                <label>Restarts</label>
-                <span id="restart-val">0</span>
-              </div>
-            </div>
-          </div>
-      </div>
+// ── Metrics Loop ──
+function startMetricsLoop() {
+  setInterval(updateMetrics, 2000);
+  updateMetrics();
+}
 
-      <div class="card logs-card">
-        <h2>System Logs</h2>
-        <div id="logs-container" class="terminal-logs">
-           <div class="log-line">> System initializing. Waiting for metrics sync...</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Settings Modal -->
-  <div id="settings-modal" class="modal-overlay hidden">
-    <div class="modal-content">
-      <h2>System Settings</h2>
-      <div class="settings-row">
-        <label>Gateway Port</label>
-        <input type="number" id="setting-gateway-port" value="18789">
-      </div>
-      <div class="settings-row">
-        <label>Auto-start on Boot</label>
-        <label class="switch">
-          <input type="checkbox" id="setting-autostart">
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="settings-row">
-        <label>System Maintenance</label>
-        <button id="update-check-btn" class="settings-btn" style="width: auto;">Check for Updates</button>
-      </div>
-      <div class="modal-actions">
-        <button id="settings-cancel" class="cancel-btn">Cancel</button>
-        <button id="settings-save" class="save-btn">Save Changes</button>
-      </div>
-    </div>
-  </div>
-`;
-
-const statusIndicator = document.getElementById('status-indicator');
-const startBtn = document.getElementById('start-btn');
-const stopBtn = document.getElementById('stop-btn');
-const settingsBtn = document.getElementById('settings-btn');
-const settingsModal = document.getElementById('settings-modal');
-const settingsSave = document.getElementById('settings-save');
-const settingsCancel = document.getElementById('settings-cancel');
-const updateCheckBtn = document.getElementById('update-check-btn');
-
-
-
-// Modal listeners
-settingsBtn.addEventListener('click', async () => {
+async function updateMetrics() {
   try {
-    const port = await invoke('get_config', { key: 'gateway.port' });
-    const autostart = await invoke('is_autostart_enabled');
-    
-    document.getElementById('setting-gateway-port').value = port;
-    document.getElementById('setting-autostart').checked = autostart;
-    
-    settingsModal.classList.remove('hidden');
-  } catch (e) {
-    appendLog("Settings Load Error: " + e, "error");
-  }
-});
+    const m = await invoke('get_metrics');
+    gatewayOnline = m.online;
 
-settingsCancel.addEventListener('click', () => {
-  settingsModal.classList.add('hidden');
-});
-
-settingsSave.addEventListener('click', async () => {
-  const port = document.getElementById('setting-gateway-port').value;
-  const autostart = document.getElementById('setting-autostart').checked;
-  
-  try {
-    await invoke('set_config', { key: 'gateway.port', value: port });
-    await invoke('toggle_autostart', { enabled: autostart });
-    
-    appendLog("Settings saved successfully.");
-    settingsModal.classList.add('hidden');
-  } catch (e) {
-    appendLog("Settings Save Error: " + e, "error");
-  }
-});
-
-updateCheckBtn.addEventListener('click', handleUpdate);
-
-async function updateDashboard() {
-  try {
-    const metrics = await invoke('get_metrics');
-    
-    // Update status
-    if (metrics.online) {
-      statusIndicator.textContent = 'ONLINE';
-      statusIndicator.className = 'indicator online';
-      startBtn.classList.add('hidden');
-      stopBtn.classList.remove('hidden');
-    } else {
-      statusIndicator.textContent = 'OFFLINE';
-      statusIndicator.className = 'indicator offline';
-      startBtn.classList.remove('hidden');
-      stopBtn.classList.add('hidden');
+    // Sidebar status
+    const dot = document.getElementById('sidebar-dot');
+    const statusText = document.getElementById('sidebar-status-text');
+    if (dot) {
+      dot.className = `status-dot ${m.online ? 'online' : 'offline'}`;
+    }
+    if (statusText) {
+      statusText.textContent = m.online ? 'Gateway Online' : 'Gateway Offline';
     }
 
-    // Update metrics
-    const cpu = metrics.cpu_usage.toFixed(1);
-    document.getElementById('cpu-val').textContent = `${cpu}%`;
-    document.getElementById('cpu-bar').style.width = `${Math.min(cpu, 100)}%`;
+    // Only update dashboard elements if they exist
+    const dashStatus = document.getElementById('dash-status');
+    if (dashStatus) {
+      dashStatus.textContent = m.online ? 'ONLINE' : 'OFFLINE';
+      dashStatus.className = `stat-value ${m.online ? 'online' : 'offline'}`;
+    }
 
-    const ram = metrics.memory_mb;
-    const totalRam = metrics.total_memory_mb;
-    document.getElementById('ram-val').textContent = `${ram} MB / ${totalRam} MB`;
-    const ramPercent = totalRam > 0 ? (ram / totalRam) * 100 : 0;
-    document.getElementById('ram-bar').style.width = `${Math.min(ramPercent, 100)}%`;
+    const dashUptime = document.getElementById('dash-uptime');
+    if (dashUptime) {
+      const s = m.uptime_secs;
+      const h = Math.floor(s / 3600);
+      const min = Math.floor((s % 3600) / 60);
+      const sec = s % 60;
+      dashUptime.textContent = `Uptime: ${h}:${String(min).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+    }
 
-    document.getElementById('restart-val').textContent = metrics.restarts;
-    
-    // Format Uptime
-    const s = metrics.uptime_secs;
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    document.getElementById('uptime-val').textContent = `${h}:${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+    const dashRestarts = document.getElementById('dash-restarts');
+    if (dashRestarts) { dashRestarts.textContent = m.restarts; }
 
-  } catch (e) {
-    console.error("Metrics error:", e);
+    const cpuBar = document.getElementById('cpu-bar');
+    const cpuVal = document.getElementById('cpu-val');
+    if (cpuBar) { cpuBar.style.width = `${Math.min(m.cpu_usage, 100).toFixed(1)}%`; }
+    if (cpuVal) { cpuVal.textContent = `${m.cpu_usage.toFixed(1)}%`; }
+
+    const ramBar = document.getElementById('ram-bar');
+    const ramVal = document.getElementById('ram-val');
+    if (ramBar && m.total_memory_mb > 0) {
+      ramBar.style.width = `${Math.min((m.memory_mb / m.total_memory_mb) * 100, 100).toFixed(1)}%`;
+    }
+    if (ramVal) { ramVal.textContent = `${m.memory_mb} / ${m.total_memory_mb} MB`; }
+
+    // Gateway control buttons visibility
+    const startBtn = document.getElementById('start-btn');
+    const stopBtn = document.getElementById('stop-btn');
+    if (startBtn) { startBtn.classList.toggle('hidden', m.online); }
+    if (stopBtn) { stopBtn.classList.toggle('hidden', !m.online); }
+
+    // Debug status
+    const debugStatus = document.getElementById('debug-status');
+    if (debugStatus) { debugStatus.textContent = m.online ? 'Running' : 'Stopped'; }
+
+  } catch {
+    // metrics unavailable
   }
 }
 
-setInterval(updateDashboard, 2000);
-void updateDashboard();
-
-startBtn.addEventListener('click', async () => {
-   try {
-     await invoke('start_gateway');
-     appendLog("Initiating gateway startup...");
-     statusIndicator.textContent = 'STARTING...';
-     statusIndicator.className = 'indicator checking';
-   } catch(e) {
-     appendLog("Start Error: " + e, "error");
-   }
-});
-
-stopBtn.addEventListener('click', async () => {
-   try {
-     await invoke('stop_gateway');
-     appendLog("Gateway stopped manually.");
-     statusIndicator.textContent = 'OFFLINE';
-     statusIndicator.className = 'indicator offline';
-     
-     // Reset bars
-     document.getElementById('cpu-bar').style.width = '0%';
-     document.getElementById('ram-bar').style.width = '0%';
-     document.getElementById('cpu-val').textContent = '0%';
-     document.getElementById('ram-val').textContent = '0 MB';
-   } catch(e) {
-     appendLog("Stop Error: " + e, "error");
-   }
-});
-
-function appendLog(msg, type="info") {
+// ── Logging ──
+function appendLog(msg, type = 'info') {
   const c = document.getElementById('logs-container');
+  if (!c) { return; }
   const d = document.createElement('div');
   d.className = `log-line ${type}`;
-  d.innerText = `[${new Date().toLocaleTimeString()}] > ${msg}`;
+  d.innerHTML = `<span class="log-time">[${ts()}]</span> ${escapeHtml(msg)}`;
   c.appendChild(d);
   c.scrollTop = c.scrollHeight;
+  // Keep max 500 lines
+  while (c.children.length > 500) { c.removeChild(c.firstChild); }
+}
+
+function clearLogs() {
+  const c = document.getElementById('logs-container');
+  if (c) {
+    c.innerHTML = `<div class="log-line"><span class="log-time">[${ts()}]</span> Logs cleared.</div>`;
+  }
+}
+
+// ── Helpers ──
+function ts() {
+  return new Date().toLocaleTimeString();
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
 }
