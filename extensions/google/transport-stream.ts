@@ -590,6 +590,28 @@ function updateUsage(
   calculateCost(model, output.usage);
 }
 
+function flushSanitizerBuffer(
+  currentBlockIndex: number,
+  output: GoogleTransportOutput,
+  sanitizerState: { buffer: string },
+  stream: StreamProducer<StreamEvent>,
+) {
+  if (sanitizerState.buffer) {
+    const tail = sanitizerState.buffer;
+    sanitizerState.buffer = "";
+    const currentBlock = output.content[currentBlockIndex];
+    if (currentBlock?.type === "text") {
+      currentBlock.text += tail;
+      stream.push({
+        type: "text_delta",
+        contentIndex: currentBlockIndex,
+        delta: tail,
+        partial: output as never,
+      });
+    }
+  }
+}
+
 function pushTextBlockEnd(
   stream: WritableTransportStream,
   output: MutableAssistantOutput,
@@ -670,21 +692,10 @@ export function createGoogleGenerativeAiTransportStreamFn(): StreamFn {
                   (isThinking && currentBlock.type !== "thinking") ||
                   (!isThinking && currentBlock.type !== "text")
                 ) {
-                if (currentBlockIndex >= 0) {
-                  const closingBlock = output.content[currentBlockIndex];
-                  if (closingBlock?.type === "text" && sanitizerState.buffer) {
-                    const tail = sanitizerState.buffer;
-                    sanitizerState.buffer = "";
-                    closingBlock.text += tail;
-                    stream.push({
-                      type: "text_delta",
-                      contentIndex: currentBlockIndex,
-                      delta: tail,
-                      partial: output as never,
-                    });
+                  if (currentBlockIndex >= 0) {
+                    flushSanitizerBuffer(currentBlockIndex, output, sanitizerState, stream);
+                    pushTextBlockEnd(stream, output, currentBlockIndex);
                   }
-                  pushTextBlockEnd(stream, output, currentBlockIndex);
-                }
                   if (isThinking) {
                     output.content.push({ type: "thinking", thinking: "" });
                     currentBlockIndex = output.content.length - 1;
@@ -733,6 +744,7 @@ export function createGoogleGenerativeAiTransportStreamFn(): StreamFn {
               }
               if (part.functionCall) {
                 if (currentBlockIndex >= 0) {
+                  flushSanitizerBuffer(currentBlockIndex, output, sanitizerState, stream);
                   pushTextBlockEnd(stream, output, currentBlockIndex);
                   currentBlockIndex = -1;
                 }
@@ -781,18 +793,7 @@ export function createGoogleGenerativeAiTransportStreamFn(): StreamFn {
           }
         }
         if (currentBlockIndex >= 0) {
-          const closingBlock = output.content[currentBlockIndex];
-          if (closingBlock?.type === "text" && sanitizerState.buffer) {
-            const tail = sanitizerState.buffer;
-            sanitizerState.buffer = "";
-            closingBlock.text += tail;
-            stream.push({
-              type: "text_delta",
-              contentIndex: currentBlockIndex,
-              delta: tail,
-              partial: output as never,
-            });
-          }
+          flushSanitizerBuffer(currentBlockIndex, output, sanitizerState, stream);
           pushTextBlockEnd(stream, output, currentBlockIndex);
         }
         finalizeTransportStream({ stream, output, signal: options?.signal });
