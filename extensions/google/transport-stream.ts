@@ -592,9 +592,9 @@ function updateUsage(
 
 function flushSanitizerBuffer(
   currentBlockIndex: number,
-  output: GoogleTransportOutput,
+  output: MutableAssistantOutput,
   sanitizerState: { buffer: string },
-  stream: StreamProducer<StreamEvent>,
+  stream: WritableTransportStream,
 ) {
   if (sanitizerState.buffer) {
     const tail = sanitizerState.buffer;
