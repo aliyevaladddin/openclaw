@@ -308,7 +308,7 @@ describe("parseNpmPackJsonOutput", () => {
 describe("collectControlUiPackErrors", () => {
   it("rejects packs that ship the dashboard HTML without the asset payload", () => {
     expect(collectControlUiPackErrors(["dist/control-ui/index.html"])).toEqual([
-      ...REQUIRED_PACKED_PATHS.map(
+      ...REQUIRED_PACKED_PATHS.filter((p) => p !== "dist/control-ui/index.html").map(
         (requiredPath) =>
           `npm package is missing required path "${requiredPath}". Ensure UI assets are built and included before publish.`,
       ),
