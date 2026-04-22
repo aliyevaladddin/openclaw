@@ -25,6 +25,7 @@ describe("thread-ownership plugin", () => {
     for (const key of Object.keys(hooks)) {
       delete hooks[key];
     }
+    api.pluginConfig = {};
 
     process.env.SLACK_FORWARDER_URL = "http://localhost:8750";
     process.env.SLACK_BOT_USER_ID = "U999";
@@ -71,6 +72,16 @@ describe("thread-ownership plugin", () => {
       expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
+    it("fails open when Slack thread routing has no canonical conversation id", async () => {
+      const result = await hooks.message_sending(
+        { content: "hello", replyToId: "1234.5678", metadata: {}, to: "" },
+        { channelId: "slack", conversationId: "" },
+      );
+
+      expect(result).toBeUndefined();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
     it("claims ownership successfully", async () => {
       vi.mocked(globalThis.fetch).mockResolvedValue(
         new Response(JSON.stringify({ owner: "test-agent" }), { status: 200 }),
@@ -100,6 +111,56 @@ describe("thread-ownership plugin", () => {
           to: "channel:C123",
         },
         { channelId: "slack", conversationId: "C123" },
+      );
+
+      expect(result).toBeUndefined();
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8750/api/v1/ownership/C123/1234.5678",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ agent_id: "test-agent" }),
+        }),
+      );
+    });
+
+    it("canonicalizes non-canonical Slack targets when shared conversationId is missing", async () => {
+      vi.mocked(globalThis.fetch).mockResolvedValue(
+        new Response(JSON.stringify({ owner: "test-agent" }), { status: 200 }),
+      );
+
+      const result = await hooks.message_sending(
+        {
+          content: "hello",
+          replyToId: "1234.5678",
+          to: "channel:c123",
+        },
+        { channelId: "slack", conversationId: "" },
+      );
+
+      expect(result).toBeUndefined();
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:8750/api/v1/ownership/C123/1234.5678",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ agent_id: "test-agent" }),
+        }),
+      );
+    });
+
+    it("canonicalizes configured ab-test channel allowlists before matching", async () => {
+      api.pluginConfig = { abTestChannels: ["channel:c123"] };
+      register.register(api as unknown as OpenClawPluginApi);
+      vi.mocked(globalThis.fetch).mockResolvedValue(
+        new Response(JSON.stringify({ owner: "test-agent" }), { status: 200 }),
+      );
+
+      const result = await hooks.message_sending(
+        {
+          content: "hello",
+          replyToId: "1234.5678",
+          to: "channel:c123",
+        },
+        { channelId: "slack", conversationId: "" },
       );
 
       expect(result).toBeUndefined();
@@ -166,7 +227,7 @@ describe("thread-ownership plugin", () => {
         {
           content: "Hey @TestBot help me",
           threadId: "9999.0002",
-          metadata: { channelId: "channel:C456" },
+          metadata: { channelId: "channel:c456" },
         },
         { channelId: "slack", conversationId: "C456" },
       );
@@ -176,6 +237,29 @@ describe("thread-ownership plugin", () => {
           content: "Sure!",
           replyToId: "9999.0002",
           to: "channel:C456",
+        },
+        { channelId: "slack", conversationId: "C456" },
+      );
+
+      expect(result).toBeUndefined();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it("canonicalizes inbound non-canonical metadata without shared conversation context", async () => {
+      await hooks.message_received(
+        {
+          content: "Hey @TestBot help me",
+          threadId: "9999.0003",
+          metadata: { channelId: "channel:c456" },
+        },
+        { channelId: "slack", conversationId: "" },
+      );
+
+      const result = await hooks.message_sending(
+        {
+          content: "Sure!",
+          replyToId: "9999.0003",
+          to: "c456",
         },
         { channelId: "slack", conversationId: "C456" },
       );
@@ -221,6 +305,69 @@ describe("thread-ownership plugin", () => {
 
       expect(result).toBeUndefined();
       expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it("tracks agent-name mentions case-insensitively", async () => {
+      await hooks.message_received(
+        {
+          content: "hey @testbot help",
+          threadId: "8888.0002",
+          metadata: { channelId: "C789" },
+        },
+        { channelId: "slack", conversationId: "C789" },
+      );
+
+      const result = await hooks.message_sending(
+        { content: "On it!", replyToId: "8888.0002", metadata: { channelId: "C789" }, to: "C789" },
+        { channelId: "slack", conversationId: "C789" },
+      );
+
+      expect(result).toBeUndefined();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it("does not treat superset handles as agent-name mentions", async () => {
+      await hooks.message_received(
+        {
+          content: "hey @testbot2 help",
+          threadId: "8888.0003",
+          metadata: { channelId: "C789" },
+        },
+        { channelId: "slack", conversationId: "C789" },
+      );
+
+      vi.mocked(globalThis.fetch).mockResolvedValue(
+        new Response(JSON.stringify({ owner: "test-agent" }), { status: 200 }),
+      );
+
+      await hooks.message_sending(
+        { content: "On it!", replyToId: "8888.0003", metadata: { channelId: "C789" }, to: "C789" },
+        { channelId: "slack", conversationId: "C789" },
+      );
+
+      expect(globalThis.fetch).toHaveBeenCalled();
+    });
+
+    it("does not treat email-like text as an agent-name mention", async () => {
+      await hooks.message_received(
+        {
+          content: "send mail to foo@testbot.com",
+          threadId: "8888.0004",
+          metadata: { channelId: "C789" },
+        },
+        { channelId: "slack", conversationId: "C789" },
+      );
+
+      vi.mocked(globalThis.fetch).mockResolvedValue(
+        new Response(JSON.stringify({ owner: "test-agent" }), { status: 200 }),
+      );
+
+      await hooks.message_sending(
+        { content: "On it!", replyToId: "8888.0004", metadata: { channelId: "C789" }, to: "C789" },
+        { channelId: "slack", conversationId: "C789" },
+      );
+
+      expect(globalThis.fetch).toHaveBeenCalled();
     });
   });
 });
